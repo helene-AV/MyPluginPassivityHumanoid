@@ -9,6 +9,7 @@
 #include <RBDyn/MultiBody.h>
 #include <RBDyn/MultiBodyConfig.h>
 #include <Eigen/src/Core/IO.h>
+#include <Eigen/src/Core/Matrix.h>
 #include <iostream>
 #include <jrl-qp/experimental/BoxAndSingleConstraintSolver.h>
 #include <tvm/defs.h>
@@ -22,7 +23,7 @@ MyPluginPassivityHumanoid::~MyPluginPassivityHumanoid() = default;
 
 void MyPluginPassivityHumanoid::init(mc_control::MCGlobalController & controller, const mc_rtc::Configuration & config)
 {
-  mc_rtc::log::info("[MyPluginPassivityHumanoid version Humanoid][init] Init called with configuration:\n{}", config.dump(true, true));
+  mc_rtc::log::info("[MyPluginPassivityHumanoid][init] Init called with configuration:\n{}", config.dump(true, true));
 
   auto & ctl = static_cast<mc_control::MCGlobalController &>(controller);
   auto & robot = ctl.robot();
@@ -42,18 +43,17 @@ void MyPluginPassivityHumanoid::init(mc_control::MCGlobalController & controller
   
   // ====================  Load  config  ==================== //
   verbose_ = config("verbose", false);
-  auto integrationTypeStr = config("integration_type",(std::string)"Simple");
-  lambda_massmatrix_ = config("lambda_massmatrix", 0.5);
+  lambda_massmatrix_ = config("lambda_massmatrix", 5);
   lambda_diag_massmatrix_= config("lambda_diag_massmatrix", 0.0);
-  lambda_id_ = config("lambda_id", 0.1);
+  lambda_id_ = config("lambda_id", 1);
   fast_filter_weight_ = config("fast_filter_weight",0.9);
-  phi_slow_ = config("phi_slow",0.01);
+  phi_slow_ = config("phi_slow",0.3);
   phi_fast_ = config("phi_fast",10.0);
-  perc_ = config("perc",10);
-  perc_target_ = config("perc",10);
+  perc_ = config("perc",20);
+  perc_target_ = config("perc",20);
   is_changing_ = false;
   filtered_activated_ = true;
-  is_active_ = true; 
+  is_active_ = false; 
   coriolis_indicator_ = config("coriolis_indicator",true);
   coriolis_indicator_value_ = 1.0;
   if (coriolis_indicator_){coriolis_indicator_value_=1.0;}
@@ -81,6 +81,7 @@ void MyPluginPassivityHumanoid::init(mc_control::MCGlobalController & controller
   tau_qp_= Eigen::VectorXd::Zero(nrDof);
   tau_coriolis_ = Eigen::VectorXd::Zero(nrDof);
   tau_current_ = Eigen::VectorXd::Zero(nrDof);
+  tau_sum_ = Eigen::VectorXd::Zero(nrDof);
 
   addGUI(controller);
   addLOG(controller);
@@ -89,14 +90,13 @@ void MyPluginPassivityHumanoid::init(mc_control::MCGlobalController & controller
 
   format = Eigen::IOFormat(2, 0, " ", "\n", "[", "]", " ", " ");
 
-  ctl.controller().datastore().make_call("MyPluginPassivityHumanoid::activated", [this]() { 
+  ctl.controller().datastore().make_call("PassivityPlugin::activated", [this]() { 
     if ( is_active_ == false) {
       slow_filtered_s_ = (K_+ coriolis_indicator_value_*C_).inverse()*(tau_current_ - tau_qp_);
       std::cout<< tau_qp_ << std::endl;
       std::cout<< tau_current_ << std::endl;
     }    
-
-    this->is_active_ = true; }); // entree dans le datastore
+    this->is_active_ = true; });
 
   mc_rtc::log::success("[MyPluginPassivityHumanoid][init] Initialization completed");
 }
@@ -110,25 +110,24 @@ void MyPluginPassivityHumanoid::reset(mc_control::MCGlobalController & controlle
 void MyPluginPassivityHumanoid::before(mc_control::MCGlobalController & controller)
 {
   auto & ctl = static_cast<mc_control::MCGlobalController &>(controller);
-  // auto & robot = ctl.robot("hrp5_p");
   auto & robot = ctl.robot();
-  // auto & realRobot = ctl.realRobot("kinova");
-
-  if (coriolis_indicator_){coriolis_indicator_value_=1.0;}
-  else {coriolis_indicator_value_=0.0;}
+  // auto & realRobot = ctl.realRobot();
+  
+  auto coriolis_activation = ctl.controller().datastore().get<std::string>("Coriolis");
+  if (coriolis_activation.compare("Yes") == 0) {coriolis_indicator_ = true;coriolis_indicator_value_=1.0; }
+  else {coriolis_indicator_ = false;coriolis_indicator_value_=0.0; }
  
-  if (robot.encoderVelocities().empty())
-  {
-    return;
-  }
+  if (robot.encoderVelocities().empty()) {return;}
 
-  rbd::paramToVector(robot.jointTorque(), tau_qp_);
+  rbd::paramToVector(robot.mbc().jointTorque, tau_qp_);
   tau_qp_ -= tau_ ; 
 
   Eigen::VectorXd alpha_d(robot.mb().nrDof());
   Eigen::VectorXd alpha(robot.mb().nrDof());
   rbd::paramToVector(robot.alphaD(),alpha_d);
   rbd::paramToVector(robot.alpha(),alpha);
+  
+  alpha_r_ +=  alpha_d*dt_;
 
   rbd::forwardKinematics(robot.mb(), robot.mbc());
   rbd::forwardVelocity(robot.mb(), robot.mbc());
@@ -137,23 +136,19 @@ void MyPluginPassivityHumanoid::before(mc_control::MCGlobalController & controll
 
   // Calculation of the tau current motor
   for (int i = 0; i < motor_current_.size(); ++i) { motor_current_(i) = robot.jointSensors()[i].motorCurrent();} 
-  for (int i = 0; i < 4; ++i) { 
+  for (int i = 0; i < motor_current_.size(); ++i) { 
     if (std::isnan(motor_current_(i))){tau_current_(i)= 0.0;}
-    else {tau_current_(i) = motor_current_(i)*100*0.11;}
-  }
-  for (int i = 4; i < 7; ++i) {
-    if (std::isnan(motor_current_(i))){tau_current_(i)= 0.0;}
-    else {tau_current_(i) = motor_current_(i)*100*0.076;}
+    else {tau_current_(i) = motor_current_(i)*100*0.11;} // il faut utiliser la relation trouvee par mathieu et rentrer les valeurs une par une pour chacun des joints
+  
   }
 
   // Passivity Torque Feedback and QP-based Anti-Windup if the Plugin is activated
 
   auto ctrl_mode = ctl.controller().datastore().get<std::string>("ControlMode");
-  if (ctrl_mode.compare("Torque") == 0) {ctl.controller().datastore().call("MyPluginPassivityHumanoid::activated");}
+  if (ctrl_mode.compare("Torque") == 0) {ctl.controller().datastore().call("PassivityPlugin::activated");}
 
   if(is_active_)
   {
-    alpha_r_ +=  alpha_d*dt_;
     // Calculation of the error
     if (filtered_activated_) 
     {
@@ -249,10 +244,10 @@ void MyPluginPassivityHumanoid::before(mc_control::MCGlobalController & controll
 
     prev_s_=new_s_;
     new_s_= (K_+coriolis_indicator_value_*C_).inverse()*(tau_current_ - tau_qp_);
-    tau_ = (K_ + coriolis_indicator_value_*C_)*s_;
+    // tau_ = (K_ + coriolis_indicator_value_*C_)*s_;
   }
 
-
+  tau_sum_= tau_qp_ + tau_coriolis_ + tau_ ;
   count_++;
 }
 
@@ -267,12 +262,12 @@ void MyPluginPassivityHumanoid::addGUI(mc_control::MCGlobalController & controll
     auto & ctl = static_cast<mc_control::MCGlobalController &>(controller);
     auto gui = ctl.controller().gui();
 
-    gui->addElement({"Plugins", "Integral term feedback", "Configure"},
-        mc_rtc::gui::Button(
-            "Activate Plugin",
-            [this, &ctl]() { this->torque_activation(ctl), is_active_= true, mc_rtc::log::info("IntegralFeedback activated"); }
-        )
-    );
+    // gui->addElement({"Plugins", "Integral term feedback", "Configure"},
+    //     mc_rtc::gui::Button(
+    //         "Activate Plugin",
+    //         [this, &ctl]() { this->torque_activation(ctl), is_active_= true, mc_rtc::log::info("IntegralFeedback activated"); }
+    //     )
+    // );
   gui->addElement({"Plugins","Integral term feedback","Configure"},
     mc_rtc::gui::Checkbox("Coriolis effect", this->coriolis_indicator_)
   );
@@ -439,6 +434,7 @@ void MyPluginPassivityHumanoid::addLOG(mc_control::MCGlobalController & controll
   controller.controller().logger().addLogEntry("MyPluginPassivityHumanoid_torque_qp", [&, this]() { return this->tau_qp_; });
   controller.controller().logger().addLogEntry("MyPluginPassivityHumanoid_torque_coriolis", [&, this]() { return this->tau_coriolis_; });
   controller.controller().logger().addLogEntry("MyPluginPassivityHumanoid_torque_current", [&, this]() { return this->tau_current_; });
+  controller.controller().logger().addLogEntry("MyPluginPassivityHumanoid_torque_sum", [&, this]() { return this->tau_sum_; });
 
 }
 
@@ -470,6 +466,7 @@ void MyPluginPassivityHumanoid::removeLOG(mc_control::MCGlobalController & contr
   controller.controller().logger().removeLogEntry("MyPluginPassivityHumanoid_torque_qp");
   controller.controller().logger().removeLogEntry("MyPluginPassivityHumanoid_torque_coriolis");
   controller.controller().logger().removeLogEntry("MyPluginPassivityHumanoid_torque_current");
+  controller.controller().logger().removeLogEntry("MyPluginPassivityHumanoid_torque_sum");
 
 }
 

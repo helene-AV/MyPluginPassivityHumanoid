@@ -111,10 +111,12 @@ private:
   Eigen::VectorXd fast_filtered_s_;
   /** Current from the motor of each joint */
   Eigen::VectorXd motor_current_;
-  /** Torque feedback term */
+  /** Torque integral term */
   Eigen::VectorXd tau_;
   /** Torque QP term */
   Eigen::VectorXd tau_qp_;
+  /** Torque QP and Integral and Coriolis */
+  Eigen::VectorXd tau_sum_;
   /** Torque coriolis term */
   Eigen::VectorXd tau_coriolis_;
   /** Torque current motor */
