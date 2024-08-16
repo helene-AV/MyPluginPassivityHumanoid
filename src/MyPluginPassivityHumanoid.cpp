@@ -91,11 +91,11 @@ void MyPluginPassivityHumanoid::init(mc_control::MCGlobalController & controller
   format = Eigen::IOFormat(2, 0, " ", "\n", "[", "]", " ", " ");
 
   ctl.controller().datastore().make_call("PassivityPlugin::activated", [this]() { 
-    if ( is_active_ == false) {
-      slow_filtered_s_ = (K_+ coriolis_indicator_value_*C_).inverse()*(tau_current_ - tau_qp_);
-      std::cout<< tau_qp_ << std::endl;
-      std::cout<< tau_current_ << std::endl;
-    }    
+    // if ( is_active_ == false) {
+    //   slow_filtered_s_ = (K_+ coriolis_indicator_value_*C_).inverse()*(tau_current_ - tau_qp_);
+    //   std::cout<< tau_qp_ << std::endl;
+    //   std::cout<< tau_current_ << std::endl;
+    // }    
     this->is_active_ = true; });
 
   mc_rtc::log::success("[MyPluginPassivityHumanoid][init] Initialization completed");
@@ -135,12 +135,13 @@ void MyPluginPassivityHumanoid::before(mc_control::MCGlobalController & controll
   C_ = coriolis_->coriolis(robot.mb(),robot.mbc());
 
   // Calculation of the tau current motor
-  for (int i = 0; i < motor_current_.size(); ++i) { motor_current_(i) = robot.jointSensors()[i].motorCurrent();} 
-  for (int i = 0; i < motor_current_.size(); ++i) { 
-    if (std::isnan(motor_current_(i))){tau_current_(i)= 0.0;}
-    else {tau_current_(i) = motor_current_(i)*100*0.11;} // il faut utiliser la relation trouvee par mathieu et rentrer les valeurs une par une pour chacun des joints
-  
-  }
+  // for (int i = 0; i < motor_current_.size(); ++i) { motor_current_(i) = robot.jointSensors()[i].motorCurrent();} 
+  // for (int i = 0; i < motor_current_.size(); ++i) { 
+  //   if (std::isnan(motor_current_(i))){tau_current_(i)= 0.0;}
+  //   else {tau_current_(i) = motor_current_(i)*100*0.11;} 
+  //   // il faut utiliser la relation trouvee par mathieu et rentrer les valeurs une par une pour chacun des joints
+  //   // et qui est dans HRP5P.xml 
+  // }
 
   // Passivity Torque Feedback and QP-based Anti-Windup if the Plugin is activated
 
