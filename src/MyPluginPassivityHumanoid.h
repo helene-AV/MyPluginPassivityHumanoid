@@ -41,7 +41,7 @@ private:
 
   std::string getIntegralTermType(void);
   void setIntegralTermType(std::string type);
-  void torque_continuity(double lambda_massmatrix,double lambda_id,double lambda_diag_massmatrix);
+  void torque_continuity(double lambda_massmatrix,double lambda_id);
   void torque_activation(mc_control::MCGlobalController & controller);
 
 private:
@@ -75,8 +75,6 @@ private:
   double lambda_massmatrix_;
   /** Positive gain value for identity matrix */
   double lambda_id_;
-  /** Positive gain value for the massmatrix diagonale */
-  double lambda_diag_massmatrix_; 
   /** Slow filter time constant */
   double phi_slow_;
   /** Fast filter time constant */
@@ -91,6 +89,8 @@ private:
   double perc_;
   /** Percentage for the torque limit in the antiwindup regarding the physical limits of the robot, used for the exponential growing due to change in the GUI */
   double perc_target_;
+  /** Power */
+  double power_;
   /** Configuration velocity reference from the integral of configuration acceleration reference*/
   Eigen::VectorXd alpha_r_;
   /** Velocity gain matrix */
@@ -115,6 +115,8 @@ private:
   Eigen::VectorXd tau_;
   /** Torque QP term */
   Eigen::VectorXd tau_qp_;
+  /** Torque send*/
+  Eigen::VectorXd tau_Out_;
   /** Torque QP and Integral and Coriolis */
   Eigen::VectorXd tau_sum_;
   /** Torque coriolis term */

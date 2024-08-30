@@ -1,11 +1,11 @@
 integration_type: Filtered
-lambda_massmatrix: 0.5
+lambda_massmatrix: 50
 labda_diag_massmatrix: 0.0
-lambda_id: 0.1
-phi_slow: 0.01
-phi_fast: 10.0
-fast_filter_weight: 0.9
-perc: 10
+lambda_id: 30
+phi_slow: 0.03
+phi_fast: 30.0
+fast_filter_weight: 0.8
+perc: 80
 coriolis_indicator: true
 maxLinAcc : [0.5,0.5,10]
 maxAngAcc : [0.087,0.087,0.087]

@@ -1,8 +1,0 @@
-# This configuration is used to run a few iterations of the controller
-MainRobot: HRP5Ps
-Enabled: Posture
-
-IncludeHalfSitController: false
-ClearGlobalPluginiPath: true
-Plugins: [ MyPluginPassivityHumanoid ]
-GlobalPluginPaths: ["/home/soucsouc/devel/src/MyPluginPassivityHumanoid/build"]

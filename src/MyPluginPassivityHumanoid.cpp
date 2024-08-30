@@ -43,14 +43,13 @@ void MyPluginPassivityHumanoid::init(mc_control::MCGlobalController & controller
   
   // ====================  Load  config  ==================== //
   verbose_ = config("verbose", false);
-  lambda_massmatrix_ = config("lambda_massmatrix", 5);
-  lambda_diag_massmatrix_= config("lambda_diag_massmatrix", 0.0);
-  lambda_id_ = config("lambda_id", 1);
+  lambda_massmatrix_ = config("lambda_massmatrix", 0.5);
+  lambda_id_ = config("lambda_id", 0.1);
   fast_filter_weight_ = config("fast_filter_weight",0.9);
   phi_slow_ = config("phi_slow",0.3);
   phi_fast_ = config("phi_fast",10.0);
-  perc_ = config("perc",20);
-  perc_target_ = config("perc",20);
+  perc_ = config("perc",10);
+  perc_target_ = config("perc",10);
   is_changing_ = false;
   filtered_activated_ = true;
   is_active_ = false; 
@@ -61,6 +60,7 @@ void MyPluginPassivityHumanoid::init(mc_control::MCGlobalController & controller
   maxLinAcc_ = Eigen::Vector3d(0.5,0.5,10);
   config("maxAngAcc", maxAngAcc_);
   config("maxLinAcc", maxLinAcc_);
+
 
   // ==================== Config loaded ==================== //
 
@@ -79,9 +79,11 @@ void MyPluginPassivityHumanoid::init(mc_control::MCGlobalController & controller
   motor_current_ = Eigen::VectorXd::Zero(nrDof);
   tau_ = Eigen::VectorXd::Zero(nrDof);
   tau_qp_= Eigen::VectorXd::Zero(nrDof);
+  tau_Out_= Eigen::VectorXd::Zero(nrDof);
   tau_coriolis_ = Eigen::VectorXd::Zero(nrDof);
   tau_current_ = Eigen::VectorXd::Zero(nrDof);
   tau_sum_ = Eigen::VectorXd::Zero(nrDof);
+
 
   addGUI(controller);
   addLOG(controller);
@@ -91,11 +93,7 @@ void MyPluginPassivityHumanoid::init(mc_control::MCGlobalController & controller
   format = Eigen::IOFormat(2, 0, " ", "\n", "[", "]", " ", " ");
 
   ctl.controller().datastore().make_call("PassivityPlugin::activated", [this]() { 
-    // if ( is_active_ == false) {
-    //   slow_filtered_s_ = (K_+ coriolis_indicator_value_*C_).inverse()*(tau_current_ - tau_qp_);
-    //   std::cout<< tau_qp_ << std::endl;
-    //   std::cout<< tau_current_ << std::endl;
-    // }    
+    if ( is_active_ == false)    
     this->is_active_ = true; });
 
   mc_rtc::log::success("[MyPluginPassivityHumanoid][init] Initialization completed");
@@ -111,7 +109,6 @@ void MyPluginPassivityHumanoid::before(mc_control::MCGlobalController & controll
 {
   auto & ctl = static_cast<mc_control::MCGlobalController &>(controller);
   auto & robot = ctl.robot();
-  // auto & realRobot = ctl.realRobot();
   
   auto coriolis_activation = ctl.controller().datastore().get<std::string>("Coriolis");
   if (coriolis_activation.compare("Yes") == 0) {coriolis_indicator_ = true;coriolis_indicator_value_=1.0; }
@@ -119,8 +116,8 @@ void MyPluginPassivityHumanoid::before(mc_control::MCGlobalController & controll
  
   if (robot.encoderVelocities().empty()) {return;}
 
-  rbd::paramToVector(robot.mbc().jointTorque, tau_qp_);
-  tau_qp_ -= tau_ ; 
+  rbd::paramToVector(robot.mbc().jointTorque, tau_Out_);
+  tau_qp_ = tau_Out_-tau_ ;
 
   Eigen::VectorXd alpha_d(robot.mb().nrDof());
   Eigen::VectorXd alpha(robot.mb().nrDof());
@@ -135,13 +132,15 @@ void MyPluginPassivityHumanoid::before(mc_control::MCGlobalController & controll
   C_ = coriolis_->coriolis(robot.mb(),robot.mbc());
 
   // Calculation of the tau current motor
-  // for (int i = 0; i < motor_current_.size(); ++i) { motor_current_(i) = robot.jointSensors()[i].motorCurrent();} 
-  // for (int i = 0; i < motor_current_.size(); ++i) { 
-  //   if (std::isnan(motor_current_(i))){tau_current_(i)= 0.0;}
-  //   else {tau_current_(i) = motor_current_(i)*100*0.11;} 
-  //   // il faut utiliser la relation trouvee par mathieu et rentrer les valeurs une par une pour chacun des joints
-  //   // et qui est dans HRP5P.xml 
-  // }
+
+  // motor_current_ = Eigen::Map<Eigen::VectorXd>(robot.jointTorques().data(), robot.jointTorques().size());
+  for (int i = 0; i < motor_current_.size(); ++i) { 
+    motor_current_[i] = robot.jointTorques()[i];
+    if (std::isnan(motor_current_(i))){tau_current_(i)= 0.0;}
+    else {tau_current_(i) = motor_current_(i);} 
+    // il faut utiliser la relation trouvee par mathieu et rentrer les valeurs une par une pour chacun des joints
+    // et qui est dans HRP5P.xml 
+  }
 
   // Passivity Torque Feedback and QP-based Anti-Windup if the Plugin is activated
 
@@ -165,8 +164,7 @@ void MyPluginPassivityHumanoid::before(mc_control::MCGlobalController & controll
     }
 
     tau_coriolis_ = coriolis_indicator_value_*C_* s_ ;
-    D_.diagonal() = fd_->H().diagonal(); 
-    K_ = lambda_massmatrix_* fd_->H() + lambda_id_*Eigen::MatrixXd::Identity(robot.mb().nrDof(),robot.mb().nrDof()) +lambda_diag_massmatrix_*D_;
+    K_ = lambda_massmatrix_* fd_->H() + lambda_id_*Eigen::MatrixXd::Identity(robot.mb().nrDof(),robot.mb().nrDof());
     tau_ = K_*s_;
 
     // Exponential integration for perc_ to maintain continuity in case the torque is constrained by the QP-Based Anti-Windup
@@ -230,25 +228,20 @@ void MyPluginPassivityHumanoid::before(mc_control::MCGlobalController & controll
       }
     }
     tau_ += tau_coriolis_; 
-
     virtual_torque_sensor_->torques(tau_);
   }
 
   else
   {
-    D_.diagonal() = fd_->H().diagonal();
+    K_ = lambda_massmatrix_* fd_->H() + lambda_id_*Eigen::MatrixXd::Identity(robot.mb().nrDof(),robot.mb().nrDof());
+    slow_filtered_s_ = (1-fast_filter_weight_)*(K_+coriolis_indicator_value_*C_).inverse()*(tau_current_ - tau_qp_);
+    s_ = slow_filtered_s_;
+    tau_ = (K_ + coriolis_indicator_value_*C_)*s_;
 
-    K_ = lambda_massmatrix_* fd_->H() + lambda_id_*Eigen::MatrixXd::Identity(robot.mb().nrDof(),robot.mb().nrDof()) +lambda_diag_massmatrix_*D_;
-    slow_filtered_s_ = (K_+coriolis_indicator_value_*C_).inverse()*(tau_current_ - tau_qp_);
-    fast_filtered_s_ = (K_+coriolis_indicator_value_*C_).inverse()*(tau_current_ - tau_qp_);
-    s_ = fast_filter_weight_ * fast_filtered_s_ + (1 - fast_filter_weight_) * slow_filtered_s_;
+}
 
-    prev_s_=new_s_;
-    new_s_= (K_+coriolis_indicator_value_*C_).inverse()*(tau_current_ - tau_qp_);
-    // tau_ = (K_ + coriolis_indicator_value_*C_)*s_;
-  }
-
-  tau_sum_= tau_qp_ + tau_coriolis_ + tau_ ;
+  power_ = (tau_current_.transpose()).dot(alpha);
+  tau_sum_= tau_qp_ + tau_ ;
   count_++;
 }
 
@@ -263,12 +256,12 @@ void MyPluginPassivityHumanoid::addGUI(mc_control::MCGlobalController & controll
     auto & ctl = static_cast<mc_control::MCGlobalController &>(controller);
     auto gui = ctl.controller().gui();
 
-    // gui->addElement({"Plugins", "Integral term feedback", "Configure"},
-    //     mc_rtc::gui::Button(
-    //         "Activate Plugin",
-    //         [this, &ctl]() { this->torque_activation(ctl), is_active_= true, mc_rtc::log::info("IntegralFeedback activated"); }
-    //     )
-    // );
+    gui->addElement({"Plugins", "Integral term feedback", "Configure"},
+        mc_rtc::gui::Button(
+            "Activate Plugin",
+            [this]() {is_active_= true, mc_rtc::log::info("IntegralFeedback activated"); }
+        )
+    );
   gui->addElement({"Plugins","Integral term feedback","Configure"},
     mc_rtc::gui::Checkbox("Coriolis effect", this->coriolis_indicator_)
   );
@@ -287,7 +280,7 @@ void MyPluginPassivityHumanoid::addGUI(mc_control::MCGlobalController & controll
     mc_rtc::gui::NumberInput("Gain Mass matrix",
       [this]() { return this-> lambda_massmatrix_; },
       [this](double lambda_massmatrix_new) {
-        torque_continuity(lambda_massmatrix_new, lambda_id_, lambda_diag_massmatrix_);
+        torque_continuity(lambda_massmatrix_new, lambda_id_);
         lambda_massmatrix_ = lambda_massmatrix_new;
       })
   );
@@ -295,16 +288,8 @@ void MyPluginPassivityHumanoid::addGUI(mc_control::MCGlobalController & controll
     mc_rtc::gui::NumberInput("Gain Identity matrix",
       [this]() { return this-> lambda_id_; },
       [this](double lambda_id_new) {
-        torque_continuity(lambda_massmatrix_, lambda_id_new, lambda_diag_massmatrix_);
+        torque_continuity(lambda_massmatrix_, lambda_id_new);
         lambda_id_=lambda_id_new;
-      })
-  );
-  gui->addElement({"Plugins","Integral term feedback","Configure"},
-    mc_rtc::gui::NumberInput("Gain Mass matrix diagonal",
-      [this]() { return this-> lambda_diag_massmatrix_; },
-      [this](double lambda_diag_massmatrix_new) {
-        torque_continuity(lambda_massmatrix_, lambda_id_, lambda_diag_massmatrix_new);
-        lambda_diag_massmatrix_ = lambda_diag_massmatrix_new;
       })
   );
   gui->addElement({"Plugins","Integral term feedback","Configure"},
@@ -418,7 +403,6 @@ void MyPluginPassivityHumanoid::addLOG(mc_control::MCGlobalController & controll
 
   controller.controller().logger().addLogEntry("MyPluginPassivityHumanoid_gain_mass_matrix", [&, this]() { return this->lambda_massmatrix_; });
   controller.controller().logger().addLogEntry("MyPluginPassivityHumanoid_gain_identity", [&, this]() { return this->lambda_id_; });
-  controller.controller().logger().addLogEntry("MyPluginPassivityHumanoid_gain_diagonal_mass_matrix", [&, this]() { return this->lambda_diag_massmatrix_; });
   controller.controller().logger().addLogEntry("MyPluginPassivityHumanoid_filter_slow_phi", [&, this]() { return this->phi_slow_; });
   controller.controller().logger().addLogEntry("MyPluginPassivityHumanoid_filter_fast_phi", [&, this]() { return this->phi_fast_; });
   controller.controller().logger().addLogEntry("MyPluginPassivityHumanoid_filter_slow_exp_phi", [&, this]() { return this->exp_phi_slow_; });
@@ -436,6 +420,7 @@ void MyPluginPassivityHumanoid::addLOG(mc_control::MCGlobalController & controll
   controller.controller().logger().addLogEntry("MyPluginPassivityHumanoid_torque_coriolis", [&, this]() { return this->tau_coriolis_; });
   controller.controller().logger().addLogEntry("MyPluginPassivityHumanoid_torque_current", [&, this]() { return this->tau_current_; });
   controller.controller().logger().addLogEntry("MyPluginPassivityHumanoid_torque_sum", [&, this]() { return this->tau_sum_; });
+  controller.controller().logger().addLogEntry("MyPluginPassivityHumanoid_power", [&, this]() { return this->power_; });
 
 }
 
@@ -450,7 +435,6 @@ void MyPluginPassivityHumanoid::removeLOG(mc_control::MCGlobalController & contr
 
   controller.controller().logger().removeLogEntry("MyPluginPassivityHumanoid_gain_mass_matrix");
   controller.controller().logger().removeLogEntry("MyPluginPassivityHumanoid_gain_identity");
-  controller.controller().logger().removeLogEntry("MyPluginPassivityHumanoid_gain_diagonal_mass_matrix");
   controller.controller().logger().removeLogEntry("MyPluginPassivityHumanoid_filter_slow_phi");
   controller.controller().logger().removeLogEntry("MyPluginPassivityHumanoid_filter_fast_phi");
   controller.controller().logger().removeLogEntry("MyPluginPassivityHumanoid_filter_slow_exp_phi");
@@ -468,14 +452,15 @@ void MyPluginPassivityHumanoid::removeLOG(mc_control::MCGlobalController & contr
   controller.controller().logger().removeLogEntry("MyPluginPassivityHumanoid_torque_coriolis");
   controller.controller().logger().removeLogEntry("MyPluginPassivityHumanoid_torque_current");
   controller.controller().logger().removeLogEntry("MyPluginPassivityHumanoid_torque_sum");
+  controller.controller().logger().removeLogEntry("MyPluginPassivityHumanoid_power");
 
 }
 
 
-void MyPluginPassivityHumanoid::torque_continuity(double lambda_massmatrix,double lambda_id,double lambda_diag_massmatrix)
+void MyPluginPassivityHumanoid::torque_continuity(double lambda_massmatrix,double lambda_id)
 {
   D_.diagonal() = fd_->H().diagonal();
-  Eigen::MatrixXd L_new = coriolis_indicator_value_*C_ + lambda_massmatrix * fd_->H() + lambda_id*Eigen::MatrixXd::Identity(s_.size(),s_.size())+lambda_diag_massmatrix * D_;
+  Eigen::MatrixXd L_new = coriolis_indicator_value_*C_ + lambda_massmatrix * fd_->H() + lambda_id*Eigen::MatrixXd::Identity(s_.size(),s_.size());
   Eigen::MatrixXd update_matrix = L_new.inverse()*(coriolis_indicator_value_*C_+K_);
   // Disjonction for filtered or simple integration 
   if (is_active_){
@@ -488,27 +473,6 @@ void MyPluginPassivityHumanoid::torque_continuity(double lambda_massmatrix,doubl
     s_ = update_matrix*s_;
     }
   }
-}
-
-
-// To be adapted with the current motor
-
-void MyPluginPassivityHumanoid::torque_activation(mc_control::MCGlobalController & controller)
-{
-  auto & ctl = static_cast<mc_control::MCGlobalController &>(controller);
-  auto & robot = ctl.robot();
-  // auto & robot = ctl.robot("hrp5_p");
-
-  Eigen::VectorXd alpha_d(robot.mb().nrDof());
-  Eigen::VectorXd alpha(robot.mb().nrDof());
-  Eigen::VectorXd alpha_r_(robot.mb().nrDof());
-
-  rbd::paramToVector(robot.alphaD(),alpha_d);
-  rbd::paramToVector(robot.alpha(),alpha);
-
-  alpha_r_ = alpha_d*dt_ ; 
-
-  slow_filtered_s_= alpha_r_ - alpha;
 }
 
 mc_control::GlobalPlugin::GlobalPluginConfiguration MyPluginPassivityHumanoid::configuration()

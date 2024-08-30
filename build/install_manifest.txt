@@ -1,2 +1,0 @@
-/home/soucsouc/devel/install/lib/mc_plugins/etc/MyPluginPassivityHumanoid.yaml
-/home/soucsouc/devel/install/lib/mc_plugins/MyPluginPassivityHumanoid.so
